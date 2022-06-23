@@ -19,7 +19,7 @@ from sklearn.model_selection import train_test_split
 from albumentations.augmentations import transforms
 from albumentations.core.composition import Compose, OneOf
 from albumentations import RandomRotate90, Resize
-from dataset import Dataset, DatasetClassify, get_dataset, get_handler
+from dataset import Dataset, DatasetClassify, get_dataset, get_handler, ClassDataHandler
 from utils import AverageMeter, str2bool
 from collections import OrderedDict
 import losses
@@ -33,6 +33,7 @@ import pandas as pd
 import time
 from badge_sampling_unext import BadgeSamplingUnext
 from balance_dataset import creat_balance_init_set
+from imblearn.over_sampling import SMOTE
 
 # code based on https://github.com/ej0cl6/deep-active-learning"
 parser = argparse.ArgumentParser()
@@ -124,6 +125,17 @@ for i in (idxs_tmp[:NUM_INIT_LB]):
     now_train_img_ids.append(train_img_ids[i])
 # now_train_img_ids = train_img_ids[idxs_tmp[:NUM_INIT_LB]]
 
+# 初始分类集img array和class array
+
+init_classify_imgs = X_tr[idxs_lb]
+init_classify_labels = np.argmax(Y_tr, axis=1)[idxs_lb]
+
+init_classify_imgs = init_classify_imgs.reshape((init_classify_imgs.shape[0], -1))
+
+smo = SMOTE(n_jobs=-1)
+x_sampling, y_sampling = smo.fit_resample(init_classify_imgs, init_classify_labels)
+x_sampling = x_sampling.reshape(-1, 512, 512, 3)
+
 init_train_dataset = Dataset(
     img_ids=now_train_img_ids,
     img_dir=os.path.join('data', opts['dataset'], 'images'),
@@ -133,11 +145,11 @@ init_train_dataset = Dataset(
     num_classes=opts['num_classes'],
     transform=train_transform)
 
-init_classify_dataset = DatasetClassify(
-    img_ids=now_train_img_ids,
-    img_dir=os.path.join('data', opts['dataset'], 'images'),
-    img_ext=opts['img_ext'],
-    transform=train_transform)
+# init_classify_dataset = DatasetClassify(
+#     img_ids=now_train_img_ids,
+#     img_dir=os.path.join('data', opts['dataset'], 'images'),
+#     img_ext=opts['img_ext'],
+#     transform=train_transform)
 
 val_dataset = Dataset(
     img_ids=val_img_ids,
@@ -155,12 +167,15 @@ init_train_loader = torch.utils.data.DataLoader(
     num_workers=opts['num_workers'],
     drop_last=True)
 
-init_classify_loader = torch.utils.data.DataLoader(
-    init_classify_dataset,
-    batch_size=opts['batch_size'],
-    shuffle=True,
-    num_workers=opts['num_workers'],
-    drop_last=True)
+# init_classify_loader = torch.utils.data.DataLoader(
+#     init_classify_dataset,
+#     batch_size=opts['batch_size'],
+#     shuffle=True,
+#     num_workers=opts['num_workers'],
+#     drop_last=True)
+
+init_classify_loader = torch.utils.data.DataLoader(ClassDataHandler(x_sampling, y_sampling, transform=train_transform),
+                                                shuffle=True, batch_size=8, num_workers=16, drop_last=True)
 
 val_loader = torch.utils.data.DataLoader(
     val_dataset,
@@ -295,10 +310,10 @@ classify_params += list(map(id, net.classlinear.parameters()))
 other_params = filter(lambda p: p.requires_grad and id(p) not in classify_params, net.parameters())
 # params = filter(lambda p: p.requires_grad, net.parameters())
 
-optimizer_seg = optim.Adam([{'params': other_params}], lr=0.0001, weight_decay=0)
+optimizer_seg = optim.Adam([{'params': other_params}], lr=0.0001, weight_decay=1e-4)
 optimizer_classify = optim.Adam([{'params': net.classHead.parameters()},
                                 {'params': net.classlinear.parameters()}],
-                                lr=0.0002, weight_decay=0)
+                                lr=0.0002, weight_decay=1e-4)
 
 # 对分类头设置更大学习率
 # classify_params = list(map(id, net.classHead.parameters()))
@@ -311,7 +326,7 @@ optimizer_classify = optim.Adam([{'params': net.classHead.parameters()},
 #                         {'params': other_params}
 #                         ], lr=0.0001, weight_decay=1e-4)
 scheduler_seg = lr_scheduler.CosineAnnealingLR(optimizer_seg, T_max=20, eta_min=1e-5)
-scheduler_classify = lr_scheduler.CosineAnnealingLR(optimizer_classify, T_max=20, eta_min=1e-5)
+scheduler_classify = lr_scheduler.CosineAnnealingLR(optimizer_classify, T_max=20, eta_min=1e-4)
 
 strategy = BadgeSamplingUnext(X_tr, Y_tr, idxs_lb, handler, val_transform)   #查询策略
 
@@ -437,6 +452,15 @@ for rd in range(1, NUM_ROUND+1):
 
     print('now itera is:', rd, 'now number of train samples:', len(now_train_img_ids))
 
+    # resample
+    now_classify_imgs = X_tr[idxs_lb]
+    now_classify_labels = np.argmax(Y_tr, axis=1)[idxs_lb]
+
+    now_classify_imgs = now_classify_imgs.reshape((now_classify_imgs.shape[0], -1))
+
+    nowx_sampling, nowy_sampling = smo.fit_resample(now_classify_imgs, now_classify_labels)
+    nowx_sampling = nowx_sampling.reshape(-1, 512, 512, 3)
+
     train_dataset = Dataset(
         img_ids=now_train_img_ids,
         img_dir=os.path.join('data', opts['dataset'], 'images'),
@@ -446,11 +470,11 @@ for rd in range(1, NUM_ROUND+1):
         num_classes=opts['num_classes'],
         transform=train_transform)
 
-    classify_dataset = DatasetClassify(
-        img_ids=now_train_img_ids,
-        img_dir=os.path.join('data', opts['dataset'], 'images'),
-        img_ext=opts['img_ext'],
-        transform=train_transform)
+    # classify_dataset = DatasetClassify(
+    #     img_ids=now_train_img_ids,
+    #     img_dir=os.path.join('data', opts['dataset'], 'images'),
+    #     img_ext=opts['img_ext'],
+    #     transform=train_transform)
 
     train_loader = torch.utils.data.DataLoader(
         train_dataset,
@@ -459,12 +483,16 @@ for rd in range(1, NUM_ROUND+1):
         num_workers=opts['num_workers'],
         drop_last=True)
 
+    # classify_loader = torch.utils.data.DataLoader(
+    #     classify_dataset,
+    #     batch_size=opts['batch_size'],
+    #     shuffle=True,
+    #     num_workers=opts['num_workers'],
+    #     drop_last=True)
+
     classify_loader = torch.utils.data.DataLoader(
-        classify_dataset,
-        batch_size=opts['batch_size'],
-        shuffle=True,
-        num_workers=opts['num_workers'],
-        drop_last=True)
+        ClassDataHandler(nowx_sampling, nowy_sampling, transform=train_transform),
+        shuffle=True, batch_size=8, num_workers=16, drop_last=True)
 
     # 训练之前清空上一查询轮次后训练的权重
     def weight_reset(m):
