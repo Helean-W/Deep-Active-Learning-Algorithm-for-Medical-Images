@@ -352,10 +352,18 @@ select_sample_ids = OrderedDict([
 best_iou = 0
 best_classify = 10000 #大值
 
-# 初始化分割
-for epoch in range(1, 16):
 
-    print('Segmentation Epoch [%d/%d]' % (epoch, 15))
+# 训练之前清空上一查询轮次后训练的权重
+def weight_reset(m):
+    if isinstance(m, nn.Conv2d) or isinstance(m, nn.Linear):
+        m.reset_parameters()
+
+net = net.apply(weight_reset).cuda()
+
+# 初始化分割
+for epoch in range(1, 31):
+
+    print('Segmentation Epoch [%d/%d]' % (epoch, 30))
     all_pre = []
     all_target = []
 
@@ -392,9 +400,9 @@ net.load_state_dict(torch.load('models/UNext_BADGE_Seg_Class/model_seg.pth'))
 
 
 # 初始化分类
-for epoch in range(1, 16):
+for epoch in range(1, 31):
 
-    print('Classify Epoch [%d/%d]' % (epoch, 15))
+    print('Classify Epoch [%d/%d]' % (epoch, 30))
 
     all_pre = []
     all_target = []
@@ -494,21 +502,31 @@ for rd in range(1, NUM_ROUND+1):
         ClassDataHandler(nowx_sampling, nowy_sampling, transform=train_transform),
         shuffle=True, batch_size=8, num_workers=16, drop_last=True)
 
-    # 训练之前清空上一查询轮次后训练的权重
-    def weight_reset(m):
-        if isinstance(m, nn.Conv2d) or isinstance(m, nn.Linear):
-            m.reset_parameters()
     net = net.apply(weight_reset).cuda()
 
+
+    c_params = list(map(id, net.classHead.parameters()))
+    c_params += list(map(id, net.classlinear.parameters()))
+    o_params = filter(lambda p: p.requires_grad and id(p) not in c_params, net.parameters())
+    # params = filter(lambda p: p.requires_grad, net.parameters())
+
+    optimizer_s = optim.Adam([{'params': o_params}], lr=0.0001, weight_decay=1e-4)
+    optimizer_c = optim.Adam([{'params': net.classHead.parameters()}, {'params': net.classlinear.parameters()}],
+                                    lr=0.0002, weight_decay=1e-4)
+
+    scheduler_s = lr_scheduler.CosineAnnealingLR(optimizer_s, T_max=30, eta_min=1e-5)
+    scheduler_c = lr_scheduler.CosineAnnealingLR(optimizer_c, T_max=30, eta_min=1e-4)
+
+
     # 训练分割网络
-    for epoch in range(1, 21):
-        print('segmentation Epoch [%d/%d]' % (epoch, 20))
+    for epoch in range(1, 31):
+        print('segmentation Epoch [%d/%d]' % (epoch, 30))
         all_pre = []
         all_target = []
-        train_log = train_seg(train_loader, net, criterion_seg, optimizer_seg)
+        train_log = train_seg(train_loader, net, criterion_seg, optimizer_s)
         val_log = validate(val_loader, net, criterion_seg, criterion_classify, all_pre, all_target)
 
-        scheduler_seg.step()
+        scheduler_s.step()
 
         print('loss_seg %.4f - iou %.4f - val_loss_seg %.4f - val_loss_classify %.4f - val_iou %.4f - classify_accu %.4f'
               % (train_log['loss_seg'], train_log['iou'], val_log['loss_seg'], val_log['loss_classify'], val_log['iou'], val_log['classification']))
@@ -538,14 +556,14 @@ for rd in range(1, NUM_ROUND+1):
     net.load_state_dict(torch.load('models/UNext_BADGE_Seg_Class/model_seg.pth'))
 
     # 训练分类器
-    for epoch in range(1, 21):
-        print('Classify Epoch [%d/%d]' % (epoch, 20))
+    for epoch in range(1, 31):
+        print('Classify Epoch [%d/%d]' % (epoch, 30))
         all_pre = []
         all_target = []
-        train_log = train_classify(classify_loader, net, criterion_classify, optimizer_classify)
+        train_log = train_classify(classify_loader, net, criterion_classify, optimizer_c)
         val_log = validate(val_loader, net, criterion_seg, criterion_classify, all_pre, all_target)
 
-        scheduler_classify.step()
+        scheduler_c.step()
 
         print('loss_classify %.4f - val_loss_seg %.4f - val_loss_classify %.4f - val_iou %.4f - classify_accu %.4f'
               % (train_log['loss_classify'], val_log['loss_seg'], val_log['loss_classify'], val_log['iou'], val_log['classification']))

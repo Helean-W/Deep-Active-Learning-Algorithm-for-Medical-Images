@@ -49,4 +49,14 @@ class Strategy_Unext:
                         else:
                             embedding[idxs[j]][embDim * c: embDim * (c + 1)] = deepcopy(out[j]) * (
                                         -1 * batchProbs[j][c])
+
+
+                # maxInds = topk(sigmoid(cout)) # H, W
+                #
+                # for idx, (x,y) in enumerate(maxInds):
+                #     if batchProbs[x, y] > 0.5:
+                #         embedding[][] = deepcopy(out[]) * (1 - batchProbs[])
+                #     else:
+                #         embedding[][] = deepcopy(out[]) * (0 - batchProbs[])
+
             return torch.Tensor(embedding)

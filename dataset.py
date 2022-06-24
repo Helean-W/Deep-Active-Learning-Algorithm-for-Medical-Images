@@ -71,7 +71,7 @@ def get_ISIC2017():
     img_ids = glob(os.path.join('data', 'ISIC2017', 'images', '*' + '.jpg'))
     img_ids = [os.path.splitext(os.path.basename(p))[0] for p in img_ids]  ###得到文件名
 
-    train_img_ids, val_img_ids = train_test_split(img_ids, test_size=0.2, random_state=41)
+    train_img_ids, val_img_ids = train_test_split(img_ids, test_size=0.2, random_state=7)
     # 训练集重采样，测试集大小不变
     # train_img_ids = balance_dataset(train_img_ids)
 
