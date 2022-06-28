@@ -1,6 +1,6 @@
 import numpy as np
 from torch.utils.data import DataLoader
-from strategy_unext import Strategy_Unext
+from strategy_unext import Strategy_Unext, Strategy_Seg_BADGE
 import pickle
 from scipy.spatial.distance import cosine
 import sys
@@ -57,7 +57,7 @@ def init_centers(X, K):
         else:
             newD = pairwise_distances(X, [mu[-1]]).ravel().astype(float)
             for i in range(len(X)):
-                if D2[i] >  newD[i]:
+                if D2[i] > newD[i]:
                     centInds[i] = cent
                     D2[i] = newD[i]
         print(str(len(mu)) + '\t' + str(sum(D2)), flush=True)
@@ -72,6 +72,7 @@ def init_centers(X, K):
         cent += 1
     return indsAll
 
+
 class BadgeSamplingUnext(Strategy_Unext):
     def __init__(self, X, Y, idxs_lb, handler, val_transform):
         super(BadgeSamplingUnext, self).__init__(X, Y, idxs_lb, handler, val_transform)
@@ -79,5 +80,17 @@ class BadgeSamplingUnext(Strategy_Unext):
     def query(self, n, net):
         idxs_unlabeled = np.arange(self.n_pool)[~self.idxs_lb]
         gradEmbedding = self.get_grad_embedding(self.X[idxs_unlabeled], self.Y.numpy()[idxs_unlabeled], net).numpy()
+        chosen = init_centers(gradEmbedding, n),
+        return idxs_unlabeled[chosen]
+
+
+class BadgeSegSamplingUnext(Strategy_Seg_BADGE):
+    def __init__(self, X, Y, idxs_lb, handler, val_transform):
+        super(BadgeSegSamplingUnext, self).__init__(X, Y, idxs_lb, handler, val_transform)
+
+    def query(self, n, net):
+        idxs_unlabeled = np.arange(self.n_pool)[~self.idxs_lb]
+        gradEmbedding = self.get_grad_embedding(self.X[idxs_unlabeled], self.Y.numpy()[idxs_unlabeled], net).numpy()
+        print('gradembdding:', type(gradEmbedding), gradEmbedding.shape)
         chosen = init_centers(gradEmbedding, n),
         return idxs_unlabeled[chosen]

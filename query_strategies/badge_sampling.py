@@ -80,5 +80,6 @@ class BadgeSampling(Strategy):
     def query(self, n):
         idxs_unlabeled = np.arange(self.n_pool)[~self.idxs_lb]
         gradEmbedding = self.get_grad_embedding(self.X[idxs_unlabeled], self.Y.numpy()[idxs_unlabeled]).numpy()
+        print('gradembdding:', type(gradEmbedding), gradEmbedding.shape)
         chosen = init_centers(gradEmbedding, n),
         return idxs_unlabeled[chosen]

@@ -31,7 +31,7 @@ from torch.optim import lr_scheduler
 import pandas as pd
 
 import time
-from badge_sampling_unext import BadgeSamplingUnext
+from badge_sampling_unext import BadgeSegSamplingUnext
 from balance_dataset import creat_balance_init_set
 from imblearn.over_sampling import SMOTE
 
@@ -128,14 +128,14 @@ for i in (idxs_tmp[:NUM_INIT_LB]):
 
 # 初始分类集img array和class array
 
-init_classify_imgs = X_tr[idxs_lb]
-init_classify_labels = np.argmax(Y_tr, axis=1)[idxs_lb]
-
-init_classify_imgs = init_classify_imgs.reshape((init_classify_imgs.shape[0], -1))
-
-smo = SMOTE(n_jobs=-1)
-x_sampling, y_sampling = smo.fit_resample(init_classify_imgs, init_classify_labels)
-x_sampling = x_sampling.reshape(-1, 512, 512, 3)
+# init_classify_imgs = X_tr[idxs_lb]
+# init_classify_labels = np.argmax(Y_tr, axis=1)[idxs_lb]
+#
+# init_classify_imgs = init_classify_imgs.reshape((init_classify_imgs.shape[0], -1))
+#
+# smo = SMOTE(n_jobs=-1)
+# x_sampling, y_sampling = smo.fit_resample(init_classify_imgs, init_classify_labels)
+# x_sampling = x_sampling.reshape(-1, 512, 512, 3)
 
 init_train_dataset = Dataset(
     img_ids=now_train_img_ids,
@@ -145,12 +145,6 @@ init_train_dataset = Dataset(
     mask_ext=opts['mask_ext'],
     num_classes=opts['num_classes'],
     transform=train_transform)
-
-# init_classify_dataset = DatasetClassify(
-#     img_ids=now_train_img_ids,
-#     img_dir=os.path.join('data', opts['dataset'], 'images'),
-#     img_ext=opts['img_ext'],
-#     transform=train_transform)
 
 val_dataset = Dataset(
     img_ids=val_img_ids,
@@ -168,15 +162,8 @@ init_train_loader = torch.utils.data.DataLoader(
     num_workers=opts['num_workers'],
     drop_last=True)
 
-# init_classify_loader = torch.utils.data.DataLoader(
-#     init_classify_dataset,
-#     batch_size=opts['batch_size'],
-#     shuffle=True,
-#     num_workers=opts['num_workers'],
-#     drop_last=True)
-
-init_classify_loader = torch.utils.data.DataLoader(ClassDataHandler(x_sampling, y_sampling, transform=train_transform),
-                                                shuffle=True, batch_size=8, num_workers=16, drop_last=True)
+# init_classify_loader = torch.utils.data.DataLoader(ClassDataHandler(x_sampling, y_sampling, transform=train_transform),
+#                                                 shuffle=True, batch_size=8, num_workers=16, drop_last=True)
 
 val_loader = torch.utils.data.DataLoader(
     val_dataset,
@@ -194,7 +181,7 @@ def train_seg(train_loader, model, criterion, optimizer):
         input = input.cuda()
         target = target.cuda()
         # compute output
-        output, outclass, _ = model(input)
+        output, _, outclass, _ = model(input)
         loss = criterion(output, target)
         iou, dice = iou_score(output, target)
         # compute gradient and do optimizing step
@@ -225,7 +212,7 @@ def train_classify(train_loader, model, criterion, optimizer):
         input = input.cuda()
         targetclass = targetclass.cuda()
         # compute output
-        output, outclass, _ = model(input)
+        output, _, outclass, _ = model(input)
         loss = criterion(outclass, targetclass)
         # compute gradient and do optimizing step
         optimizer.zero_grad()
@@ -261,7 +248,7 @@ def validate(val_loader, model, criterion_seg, criterion_classify, all_pre, all_
             target = target.cuda()
             targetclass = targetclass.cuda()
 
-            output, outclass, _ = model(input)
+            output, _, outclass, _ = model(input)
             loss_seg = criterion_seg(output, target)
             loss_class = criterion_classify(outclass, targetclass)
             iou,dice = iou_score(output, target)
@@ -297,12 +284,12 @@ def validate(val_loader, model, criterion_seg, criterion_classify, all_pre, all_
                         ('classification', classify_f1)])
 
 
-os.makedirs('models/UNext_BADGE_Seg_Class', exist_ok=True)
+os.makedirs('models/UNext_BADGE_Only_For_Seg', exist_ok=True)
 
 criterion_seg = losses.__dict__['BCEDiceLoss']().cuda()
 criterion_classify = losses.__dict__['ClassifyLoss']().cuda()
 cudnn.benchmark = True
-net = archs.__dict__['UNext'](1, 3, False)
+net = archs.__dict__['UNext3'](1, 3, False)
 net = net.cuda()
 
 
@@ -316,20 +303,10 @@ optimizer_classify = optim.Adam([{'params': net.classHead.parameters()},
                                 {'params': net.classlinear.parameters()}],
                                 lr=0.0002, weight_decay=1e-4)
 
-# 对分类头设置更大学习率
-# classify_params = list(map(id, net.classHead.parameters()))
-# classify_params += list(map(id, net.classlinear.parameters()))
-#
-# other_params = filter(lambda p: p.requires_grad and id(p) not in classify_params, net.parameters())
-#
-# optimizer = optim.Adam([{'params': net.classHead.parameters(), 'lr': 0.0002, 'weight_decay': 0},
-#                         {'params': net.classlinear.parameters(), 'lr': 0.0002, 'weight_decay': 0},
-#                         {'params': other_params}
-#                         ], lr=0.0001, weight_decay=1e-4)
 scheduler_seg = lr_scheduler.CosineAnnealingLR(optimizer_seg, T_max=20, eta_min=1e-5)
 scheduler_classify = lr_scheduler.CosineAnnealingLR(optimizer_classify, T_max=20, eta_min=1e-4)
 
-strategy = BadgeSamplingUnext(X_tr, Y_tr, idxs_lb, handler, val_transform)   #查询策略
+strategy = BadgeSegSamplingUnext(X_tr, Y_tr, idxs_lb, handler, val_transform)   #查询策略
 
 log = OrderedDict([
     ('iteration', []),
@@ -391,58 +368,58 @@ for epoch in range(1, 31):
     log['val_class_accu'].append(val_log['classification'])
 
     if val_log['iou'] > best_iou:
-        torch.save(net.state_dict(), 'models/UNext_BADGE_Seg_Class/model_seg.pth')
+        torch.save(net.state_dict(), 'models/UNext_BADGE_Only_For_Seg/model_seg.pth')
         best_iou = val_log['iou']
         print("=> saved best segmentation model")
 
     torch.cuda.empty_cache()
 
-net.load_state_dict(torch.load('models/UNext_BADGE_Seg_Class/model_seg.pth'))
+net.load_state_dict(torch.load('models/UNext_BADGE_Only_For_Seg/model_seg.pth'))
 
 
 # 初始化分类
-for epoch in range(1, 31):
-
-    print('Classify Epoch [%d/%d]' % (epoch, 30))
-
-    all_pre = []
-    all_target = []
-    train_log = train_classify(init_classify_loader, net, criterion_classify, optimizer_classify)
-    val_log = validate(val_loader, net, criterion_seg, criterion_classify, all_pre, all_target)
-
-    scheduler_classify.step()
-
-    print('loss_classify %.4f - val_loss_seg %.4f - val_loss_classify %.4f - val_iou %.4f - classify_accu %.4f'
-          % (train_log['loss_classify'], val_log['loss_seg'], val_log['loss_classify'], val_log['iou'], val_log['classification']))
-
-    log['iteration'].append('0')
-    log['stage'].append('classification')
-    log['epoch'].append(epoch)
-    log['lr'].append(opts['lr'])
-    log['loss_seg'].append(' ')
-    log['loss_classify'].append(train_log['loss_classify'])
-    log['iou'].append(' ')
-    log['val_loss_seg'].append(val_log['loss_seg'])
-    log['val_loss_classify'].append(val_log['loss_classify'])
-    log['val_iou'].append(val_log['iou'])
-    log['val_dice'].append(val_log['dice'])
-    log['val_class_accu'].append(val_log['classification'])
-
-    if val_log['loss_classify'] <= best_classify:
-        torch.save(net.state_dict(), 'models/UNext_BADGE_Seg_Class/model_classify.pth')
-        best_classify = val_log['loss_classify']
-        print("=> saved best classify model")
-
-    torch.cuda.empty_cache()
-
-pd.DataFrame(log).to_csv('models/UNext_BADGE_Seg_Class/log.csv', index=False)
+# for epoch in range(1, 2):
+#
+#     print('Classify Epoch [%d/%d]' % (epoch, 30))
+#
+#     all_pre = []
+#     all_target = []
+#     train_log = train_classify(init_classify_loader, net, criterion_classify, optimizer_classify)
+#     val_log = validate(val_loader, net, criterion_seg, criterion_classify, all_pre, all_target)
+#
+#     scheduler_classify.step()
+#
+#     print('loss_classify %.4f - val_loss_seg %.4f - val_loss_classify %.4f - val_iou %.4f - classify_accu %.4f'
+#           % (train_log['loss_classify'], val_log['loss_seg'], val_log['loss_classify'], val_log['iou'], val_log['classification']))
+#
+#     log['iteration'].append('0')
+#     log['stage'].append('classification')
+#     log['epoch'].append(epoch)
+#     log['lr'].append(opts['lr'])
+#     log['loss_seg'].append(' ')
+#     log['loss_classify'].append(train_log['loss_classify'])
+#     log['iou'].append(' ')
+#     log['val_loss_seg'].append(val_log['loss_seg'])
+#     log['val_loss_classify'].append(val_log['loss_classify'])
+#     log['val_iou'].append(val_log['iou'])
+#     log['val_dice'].append(val_log['dice'])
+#     log['val_class_accu'].append(val_log['classification'])
+#
+#     if val_log['loss_classify'] <= best_classify:
+#         torch.save(net.state_dict(), 'models/UNext_BADGE_Only_For_Seg/model_classify.pth')
+#         best_classify = val_log['loss_classify']
+#         print("=> saved best classify model")
+#
+#     torch.cuda.empty_cache()
+#
+# pd.DataFrame(log).to_csv('models/UNext_BADGE_Only_For_Seg/log.csv', index=False)
 
 for rd in range(1, NUM_ROUND+1):
 
     new_best_iou = 0
     new_best_classify = 10000
 
-    net.load_state_dict(torch.load('models/UNext_BADGE_Seg_Class/model_classify.pth'))
+    net.load_state_dict(torch.load('models/UNext_BADGE_Only_For_Seg/model_seg.pth'))
 
     output = strategy.query(NUM_QUERY, net)
     q_idxs = output
@@ -457,18 +434,18 @@ for rd in range(1, NUM_ROUND+1):
         select_sample_ids['iteration'].append(rd)
     now_train_img_ids = now_train_img_ids + q_train_img_ids
 
-    pd.DataFrame(select_sample_ids).to_csv('models/UNext_BADGE_Seg_Class/select_ids.csv', index=False)
+    pd.DataFrame(select_sample_ids).to_csv('models/UNext_BADGE_Only_For_Seg/select_ids.csv', index=False)
 
     print('now itera is:', rd, 'now number of train samples:', len(now_train_img_ids))
 
     # resample
-    now_classify_imgs = X_tr[idxs_lb]
-    now_classify_labels = np.argmax(Y_tr, axis=1)[idxs_lb]
-
-    now_classify_imgs = now_classify_imgs.reshape((now_classify_imgs.shape[0], -1))
-
-    nowx_sampling, nowy_sampling = smo.fit_resample(now_classify_imgs, now_classify_labels)
-    nowx_sampling = nowx_sampling.reshape(-1, 512, 512, 3)
+    # now_classify_imgs = X_tr[idxs_lb]
+    # now_classify_labels = np.argmax(Y_tr, axis=1)[idxs_lb]
+    #
+    # now_classify_imgs = now_classify_imgs.reshape((now_classify_imgs.shape[0], -1))
+    #
+    # nowx_sampling, nowy_sampling = smo.fit_resample(now_classify_imgs, now_classify_labels)
+    # nowx_sampling = nowx_sampling.reshape(-1, 512, 512, 3)
 
     train_dataset = Dataset(
         img_ids=now_train_img_ids,
@@ -479,12 +456,6 @@ for rd in range(1, NUM_ROUND+1):
         num_classes=opts['num_classes'],
         transform=train_transform)
 
-    # classify_dataset = DatasetClassify(
-    #     img_ids=now_train_img_ids,
-    #     img_dir=os.path.join('data', opts['dataset'], 'images'),
-    #     img_ext=opts['img_ext'],
-    #     transform=train_transform)
-
     train_loader = torch.utils.data.DataLoader(
         train_dataset,
         batch_size=opts['batch_size'],
@@ -493,15 +464,8 @@ for rd in range(1, NUM_ROUND+1):
         drop_last=True)
 
     # classify_loader = torch.utils.data.DataLoader(
-    #     classify_dataset,
-    #     batch_size=opts['batch_size'],
-    #     shuffle=True,
-    #     num_workers=opts['num_workers'],
-    #     drop_last=True)
-
-    classify_loader = torch.utils.data.DataLoader(
-        ClassDataHandler(nowx_sampling, nowy_sampling, transform=train_transform),
-        shuffle=True, batch_size=8, num_workers=16, drop_last=True)
+    #     ClassDataHandler(nowx_sampling, nowy_sampling, transform=train_transform),
+    #     shuffle=True, batch_size=8, num_workers=16, drop_last=True)
 
     net = net.apply(weight_reset).cuda()
 
@@ -545,49 +509,49 @@ for rd in range(1, NUM_ROUND+1):
         log['val_dice'].append(val_log['dice'])
         log['val_class_accu'].append(val_log['classification'])
 
-        pd.DataFrame(log).to_csv('models/UNext_BADGE_Seg_Class/log.csv', index=False)
+        pd.DataFrame(log).to_csv('models/UNext_BADGE_Only_For_Seg/log.csv', index=False)
 
         if val_log['iou'] > new_best_iou:
-            torch.save(net.state_dict(), 'models/UNext_BADGE_Seg_Class/model_seg.pth')
+            torch.save(net.state_dict(), 'models/UNext_BADGE_Only_For_Seg/model_seg.pth')
             new_best_iou = val_log['iou']
             print("=> saved best segmentation model")
 
         torch.cuda.empty_cache()
 
-    net.load_state_dict(torch.load('models/UNext_BADGE_Seg_Class/model_seg.pth'))
+    net.load_state_dict(torch.load('models/UNext_BADGE_Only_For_Seg/model_seg.pth'))
 
     # 训练分类器
-    for epoch in range(1, 31):
-        print('Classify Epoch [%d/%d]' % (epoch, 30))
-        all_pre = []
-        all_target = []
-        train_log = train_classify(classify_loader, net, criterion_classify, optimizer_c)
-        val_log = validate(val_loader, net, criterion_seg, criterion_classify, all_pre, all_target)
-
-        scheduler_c.step()
-
-        print('loss_classify %.4f - val_loss_seg %.4f - val_loss_classify %.4f - val_iou %.4f - classify_accu %.4f'
-              % (train_log['loss_classify'], val_log['loss_seg'], val_log['loss_classify'], val_log['iou'], val_log['classification']))
-
-        log['iteration'].append(rd)
-        log['stage'].append('classification')
-        log['epoch'].append(epoch)
-        log['lr'].append(opts['lr'])
-        log['loss_seg'].append(' ')
-        log['loss_classify'].append(train_log['loss_classify'])
-        log['iou'].append(' ')
-        log['val_loss_seg'].append(val_log['loss_seg'])
-        log['val_loss_classify'].append(val_log['loss_classify'])
-        log['val_iou'].append(val_log['iou'])
-        log['val_dice'].append(val_log['dice'])
-        log['val_class_accu'].append(val_log['classification'])
-
-        pd.DataFrame(log).to_csv('models/UNext_BADGE_Seg_Class/log.csv', index=False)
-
-        if val_log['loss_classify'] <= new_best_classify:
-            torch.save(net.state_dict(), 'models/UNext_BADGE_Seg_Class/model_classify.pth')
-            new_best_classify = val_log['loss_classify']
-            print("=> saved best classify model")
-
-        torch.cuda.empty_cache()
+    # for epoch in range(1, 31):
+    #     print('Classify Epoch [%d/%d]' % (epoch, 30))
+    #     all_pre = []
+    #     all_target = []
+    #     train_log = train_classify(classify_loader, net, criterion_classify, optimizer_c)
+    #     val_log = validate(val_loader, net, criterion_seg, criterion_classify, all_pre, all_target)
+    #
+    #     scheduler_c.step()
+    #
+    #     print('loss_classify %.4f - val_loss_seg %.4f - val_loss_classify %.4f - val_iou %.4f - classify_accu %.4f'
+    #           % (train_log['loss_classify'], val_log['loss_seg'], val_log['loss_classify'], val_log['iou'], val_log['classification']))
+    #
+    #     log['iteration'].append(rd)
+    #     log['stage'].append('classification')
+    #     log['epoch'].append(epoch)
+    #     log['lr'].append(opts['lr'])
+    #     log['loss_seg'].append(' ')
+    #     log['loss_classify'].append(train_log['loss_classify'])
+    #     log['iou'].append(' ')
+    #     log['val_loss_seg'].append(val_log['loss_seg'])
+    #     log['val_loss_classify'].append(val_log['loss_classify'])
+    #     log['val_iou'].append(val_log['iou'])
+    #     log['val_dice'].append(val_log['dice'])
+    #     log['val_class_accu'].append(val_log['classification'])
+    #
+    #     pd.DataFrame(log).to_csv('models/UNext_BADGE_Only_For_Seg/log.csv', index=False)
+    #
+    #     if val_log['loss_classify'] <= new_best_classify:
+    #         torch.save(net.state_dict(), 'models/UNext_BADGE_Only_For_Seg/model_classify.pth')
+    #         new_best_classify = val_log['loss_classify']
+    #         print("=> saved best classify model")
+    #
+    #     torch.cuda.empty_cache()
 
