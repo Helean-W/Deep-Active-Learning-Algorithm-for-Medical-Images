@@ -90,7 +90,7 @@ class BadgeSegSamplingUnext(Strategy_Seg_BADGE):
 
     def query(self, n, net):
         idxs_unlabeled = np.arange(self.n_pool)[~self.idxs_lb]
-        gradEmbedding = self.get_grad_embedding(self.X[idxs_unlabeled], self.Y.numpy()[idxs_unlabeled], net).numpy()
+        gradEmbedding = self.get_grad_embedding(self.X[idxs_unlabeled], self.Y.numpy()[idxs_unlabeled], net)
         print('gradembdding:', type(gradEmbedding), gradEmbedding.shape)
         chosen = init_centers(gradEmbedding, n),
         return idxs_unlabeled[chosen]

@@ -74,7 +74,7 @@ class Strategy_Seg_BADGE:
     def get_grad_embedding(self, X, Y, model):
         embDim = model.get_seg_channsels()
         model.eval()
-        K = 5   # 每张图的激活值分成5组
+        K = 10   # 每张图的激活值分成5组
         embedding = np.zeros([len(Y), embDim * K])
         loader_te = DataLoader(self.handler(X, Y, transform=self.val_transform),
                                shuffle=False, batch_size=8, num_workers=16)
@@ -83,31 +83,39 @@ class Strategy_Seg_BADGE:
                 # print('查询loader:', x.shape, y.shape, idxs)  torch.Size([8, 3, 512, 512]) torch.Size([8])  torch.Size([8])
                 x, y = Variable(x.cuda()), Variable(y.cuda())
                 mask, emb, _, _ = model(x)  # mask: torch.Size([8, 1, 512, 512])  emb: torch.Size([8, 16, 512, 512])
-                emb = emb.cpu().numpy()
-                batchProbs = torch.sigmoid(mask).cpu().numpy()
-                batchProbs = np.squeeze(batchProbs)  # torch.Size([8, 512, 512])
 
-                final_mask = batchProbs.copy()  # torch.Size([8, 512, 512])
+                batchProbs = torch.sigmoid(mask).repeat(1, 16, 1, 1)   # 输出的mask经过sigmoid
+
+                final_mask = deepcopy(batchProbs)  # torch.Size([8, 512, 512])
                 final_mask[final_mask >= 0.5] = 1
                 final_mask[final_mask < 0.5] = 0
 
-
-                emb = torch.randn(8, 16, 512, 512)
-                mask = torch.randn(8, 1, 512, 512)
-                batchProbs = torch.sigmoid(mask).repeat(1, 16, 1, 1)
-                bins_embedding = []
-                for base in range(0, 10, 2):
+                batch_embedding = []
+                for base in range(0, 10, 1):  # base/10 ∈ [0~1], step=0.2
                     bin_embedding = deepcopy(emb)
+
+                    # Out-of-range values are set to 0
                     bin_embedding[batchProbs < base / 10] = 0
-                    bin_embedding[batchProbs > (base + 2) / 10] = 0
-                    bin_embedding = torch.sum(bin_embedding, (-1, -2)) / torch.sum(bin_embedding[:, :1] != 0,
-                                                                                   dim=(-1, -2))
-                    bins_embedding.append(bin_embedding)
-                bins_embedding = torch.cat(bins_embedding, dim=1)
-                print(bins_embedding.shape)
+                    bin_embedding[batchProbs > (base + 1) / 10] = 0
+
+                    bin_mask = torch.ones_like(batchProbs)
+                    bin_mask[batchProbs < base / 10] = 0
+                    bin_mask[batchProbs > (base + 1) / 10] = 0
+
+                    # Numerator: sum of all the values.
+                    # Denominator: total number of non-zero positions.
+
+                    bin_embedding = torch.sum(torch.mul(bin_embedding, torch.sub(final_mask, batchProbs)), (-1, -2)) / (torch.sum(bin_mask[:, :1, :, :], dim=(-1, -2)) + 1e-7)
+                    # append this bin
+                    batch_embedding.append(bin_embedding)
+                batch_embedding = torch.cat(batch_embedding, dim=1)
+
+                embedding[idxs] = batch_embedding.cpu().numpy()
+
+            return embedding
 
 
-                bce_grad_res = np.zeros([8, 512, 512, embDim])   # sigmoid结果的梯度嵌入结果
+                # bce_grad_res = np.zeros([8, 512, 512, embDim])   # sigmoid结果的梯度嵌入结果
 
                 # for j in range(len(y)):
                 #     singleProbs = batchProbs[j]
@@ -166,4 +174,4 @@ class Strategy_Seg_BADGE:
                 #     embedding[idxs[j]] = np.concatenate((range02, range24, range46, range68, range80))   # [num, 16 * 5]
                 #     # print('embdding:', embedding.shape) (1520, 80)
 
-            return torch.Tensor(embedding)
+            # return torch.Tensor(embedding)

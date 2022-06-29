@@ -88,6 +88,7 @@ handler = get_handler('ISIC2017')
 
 # start experiment
 n_pool = len(train_img_ids)  #1600
+# n_pool = 120
 n_test = len(val_img_ids)    #400
 print('number of labeled pool: {}'.format(NUM_INIT_LB), flush=True)
 print('number of unlabeled pool: {}'.format(n_pool - NUM_INIT_LB), flush=True)

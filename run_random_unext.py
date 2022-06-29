@@ -69,7 +69,7 @@ opts = parser.parse_args()
 NUM_INIT_LB = opts.nStart
 NUM_QUERY = opts.nQuery
 # NUM_ROUND = int((opts.nEnd - NUM_INIT_LB) / opts.nQuery)
-NUM_ROUND = 18
+NUM_ROUND = 16
 DATA_NAME = 'ISIC2017'
 
 ## 得到所有图片和其对应类别
@@ -87,7 +87,6 @@ opts.dim = np.shape(X_tr)[1:]
 print('dim:', opts.dim)
 handler = get_handler('ISIC2017')
 
-
 # start experiment
 n_pool = len(train_img_ids)  #1600
 n_test = len(val_img_ids)    #400
@@ -98,6 +97,7 @@ print('number of testing pool: {}'.format(n_test), flush=True)
 # generate initial labeled pool
 idxs_lb = np.zeros(n_pool, dtype=bool)
 idxs_tmp = np.arange(n_pool)
+np.random.seed(7)
 np.random.shuffle(idxs_tmp)
 idxs_lb[idxs_tmp[:NUM_INIT_LB]] = True
 
@@ -120,21 +120,12 @@ val_transform = Compose([
     transforms.Normalize(),
 ])
 
-
 #   初始标注样本id
 now_train_img_ids = []
 for i in (idxs_tmp[:NUM_INIT_LB]):
     now_train_img_ids.append(train_img_ids[i])
 # now_train_img_ids = train_img_ids[idxs_tmp[:NUM_INIT_LB]]
 
-init_train_dataset = Dataset(
-    img_ids=now_train_img_ids,
-    img_dir=os.path.join('data', opts['dataset'], 'images'),
-    mask_dir=os.path.join('data', opts['dataset'], 'masks'),
-    img_ext=opts['img_ext'],
-    mask_ext=opts['mask_ext'],
-    num_classes=opts['num_classes'],
-    transform=train_transform)
 val_dataset = Dataset(
     img_ids=val_img_ids,
     img_dir=os.path.join('data', opts['dataset'], 'images'),
@@ -144,12 +135,6 @@ val_dataset = Dataset(
     num_classes=opts['num_classes'],
     transform=val_transform)
 
-init_train_loader = torch.utils.data.DataLoader(
-    init_train_dataset,
-    batch_size=opts['batch_size'],
-    shuffle=True,
-    num_workers=opts['num_workers'],
-    drop_last=True)
 val_loader = torch.utils.data.DataLoader(
     val_dataset,
     batch_size=opts['batch_size'],
@@ -157,27 +142,18 @@ val_loader = torch.utils.data.DataLoader(
     num_workers=opts['num_workers'],
     drop_last=False)
 
-def train(config, train_loader, model, criterion, optimizer):
+def train(train_loader, model, criterion, optimizer):
     avg_meters = {'loss_seg': AverageMeter(),
                   'iou': AverageMeter()}
     model.train()
     pbar = tqdm(total=len(train_loader))
-    for input, target, targetclass, _ in train_loader:
+    for input, target, _, _ in train_loader:
         input = input.cuda()
         target = target.cuda()
-        targetclass = targetclass.cuda()
         # compute output
-        if config['deep_supervision']:
-            outputs = model(input)
-            loss = 0
-            for output in outputs:
-                loss += criterion(output, target)
-            loss /= len(outputs)
-            iou,dice = iou_score(outputs[-1], target)
-        else:
-            output, outclass, _ = model(input)
-            loss_seg = criterion(output, target)
-            iou,dice = iou_score(output, target)
+        output, _, outclass, _ = model(input)
+        loss_seg = criterion(output, target)
+        iou, dice = iou_score(output, target)
         # compute gradient and do optimizing step
         optimizer.zero_grad()
         loss_seg.backward()
@@ -198,11 +174,11 @@ def train(config, train_loader, model, criterion, optimizer):
     return OrderedDict([('loss_seg', avg_meters['loss_seg'].avg),
                         ('iou', avg_meters['iou'].avg)])
 
-def validate(config, val_loader, model, criterion):
+def validate(val_loader, model, criterion, criterion_classify, all_pre, all_target):
     avg_meters = {'loss_seg': AverageMeter(),
+                  'loss_classify': AverageMeter(),
                   'iou': AverageMeter(),
-                  'dice': AverageMeter(),
-                  'classification': AverageMeter()}
+                  'dice': AverageMeter()}
 
     # switch to evaluate mode
     model.eval()
@@ -214,45 +190,47 @@ def validate(config, val_loader, model, criterion):
             target = target.cuda()
             targetclass = targetclass.cuda()
             # compute output
-            if config['deep_supervision']:
-                outputs = model(input)
-                loss = 0
-                for output in outputs:
-                    loss += criterion(output, target)
-                loss /= len(outputs)
-                iou,dice = iou_score(outputs[-1], target)
-            else:
-                output, outclass, _ = model(input)
-                loss_seg = criterion(output, target)
-                iou,dice = iou_score(output, target)
-                classify_f1 = F1_Score(outclass, targetclass)
+            output, _, outclass, _ = model(input)
+            loss_seg = criterion(output, target)
+            loss_class = criterion_classify(outclass, targetclass)
+            iou, dice = iou_score(output, target)
+
+            all_pre.append(outclass.cpu())
+            all_target.append(targetclass.cpu())
 
             avg_meters['loss_seg'].update(loss_seg.item(), input.size(0))
+            avg_meters['loss_classify'].update(loss_class.item(), input.size(0))
             avg_meters['iou'].update(iou, input.size(0))
             avg_meters['dice'].update(dice, input.size(0))
-            avg_meters['classification'].update(classify_f1)
 
             postfix = OrderedDict([
                 ('loss_seg', avg_meters['loss_seg'].avg),
+                ('loss_classify', avg_meters['loss_classify'].avg),
                 ('iou', avg_meters['iou'].avg),
-                ('dice', avg_meters['dice'].avg),
-                ('classification', avg_meters['classification'].avg)
+                ('dice', avg_meters['dice'].avg)
             ])
             pbar.set_postfix(postfix)
             pbar.update(1)
         pbar.close()
 
+    all_pre = np.concatenate(all_pre, axis=0)
+    all_target = np.concatenate(all_target, axis=0)
+
+    classify_f1 = F1_Score(all_pre, all_target)
+
     return OrderedDict([('loss_seg', avg_meters['loss_seg'].avg),
+                        ('loss_classify', avg_meters['loss_classify'].avg),
                         ('iou', avg_meters['iou'].avg),
                         ('dice', avg_meters['dice'].avg),
-                        ('classification', avg_meters['classification'].avg)])
+                        ('classification', classify_f1)])
 
 
 os.makedirs('models/UNext_Random', exist_ok=True)
 
 criterion = losses.__dict__['BCEDiceLoss']().cuda()
+criterion_classify = losses.__dict__['ClassifyLoss']().cuda()
 cudnn.benchmark = True
-net = archs.__dict__['UNext2'](1, 3, False)
+net = archs.__dict__['UNext3'](1, 3, False)
 net = net.cuda()
 
 # params = filter(lambda p: p.requires_grad, net.parameters())
@@ -264,85 +242,47 @@ classify_params += list(map(id, net.classlinear.parameters()))
 
 other_params = filter(lambda p: p.requires_grad and id(p) not in classify_params, net.parameters())
 
-optimizer = optim.Adam([{'params': net.classHead.parameters(), 'lr': 0.0002, 'weight_decay': 0},
-                        {'params': net.classlinear.parameters(), 'lr': 0.0002, 'weight_decay': 0},
-                        {'params': other_params}
-                        ], lr=0.0001, weight_decay=0)
-scheduler = lr_scheduler.CosineAnnealingLR(optimizer, T_max=20, eta_min=1e-5)
+# optimizer_seg = optim.Adam([{'params': other_params}], lr=0.0001, weight_decay=1e-4)
+# scheduler = lr_scheduler.CosineAnnealingLR(optimizer_seg, T_max=20, eta_min=1e-5)
 
 strategy = RandomSamplingUnext(X_tr, Y_tr, idxs_lb)   #查询策略
 
 log = OrderedDict([
+    ('iteration', []),
+    ('stage', []),
     ('epoch', []),
     ('lr', []),
     ('loss_seg', []),
+    ('loss_classify', []),
     ('iou', []),
     ('val_loss_seg', []),
+    ('val_loss_classify', []),
     ('val_iou', []),
     ('val_dice', []),
     ('val_class_accu', []),
 ])
 
+select_sample_ids = OrderedDict([
+    ('iteration', []),
+    ('id', [])])
+
 best_iou = 0
-trigger = 0
 
-for epoch in range(1, 16):
+# 训练之前清空上一查询轮次后训练的权重
+def weight_reset(m):
+    if isinstance(m, nn.Conv2d) or isinstance(m, nn.Linear):
+        m.reset_parameters()
 
-    print('Epoch [%d/%d]' % (epoch, 15))
+net = net.apply(weight_reset).cuda()
 
-    # train for one epoch
-    train_log = train(opts, init_train_loader, net, criterion, optimizer)
-    # evaluate on validation set
-    val_log = validate(opts, val_loader, net, criterion)
+for rd in range(NUM_ROUND+1):
 
-    scheduler.step()
-
-    print('loss_seg %.4f - iou %.4f - val_loss_seg %.4f - val_iou %.4f - classify_accu %.4f'
-          % (train_log['loss_seg'], train_log['iou'], val_log['loss_seg'], val_log['iou'], val_log['classification']))
-
-    log['epoch'].append(epoch)
-    log['lr'].append(opts['lr'])
-    log['loss_seg'].append(train_log['loss_seg'])
-    log['iou'].append(train_log['iou'])
-    log['val_loss_seg'].append(val_log['loss_seg'])
-    log['val_iou'].append(val_log['iou'])
-    log['val_dice'].append(val_log['dice'])
-    log['val_class_accu'].append(val_log['classification'])
-
-    pd.DataFrame(log).to_csv('models/UNext_Random/log.csv', index=False)
-
-    trigger += 1
-
-    if val_log['iou'] > best_iou:
-        torch.save(net.state_dict(), 'models/UNext_Random/model.pth')
-        best_iou = val_log['iou']
-        print("=> saved best model")
-        trigger = 0
-
-    # early stopping
-
-    torch.cuda.empty_cache()
-
-
-
-for rd in range(1, NUM_ROUND+1):
+    net = net.apply(weight_reset).cuda()
 
     new_best_iou = 0
-    new_trigger = 0
 
     # net.load_state_dict(torch.load('models/UNext_Random/model.pth'))
 
-    output = strategy.query(NUM_QUERY)
-    q_idxs = output
-    idxs_lb[q_idxs] = True
-    strategy.update(idxs_lb)
-    # 更新标注集ID
-    q_train_img_ids = []
-    for i in q_idxs:
-        q_train_img_ids.append(train_img_ids[i])
-    now_train_img_ids = now_train_img_ids + q_train_img_ids
-
-    print('now number of train samples:', len(now_train_img_ids))
     train_dataset = Dataset(
         img_ids=now_train_img_ids,
         img_dir=os.path.join('data', opts['dataset'], 'images'),
@@ -358,43 +298,60 @@ for rd in range(1, NUM_ROUND+1):
         num_workers=opts['num_workers'],
         drop_last=True)
 
-    # 训练之前清空上一查询轮次后训练的权重
-    def weight_reset(m):
-        if isinstance(m, nn.Conv2d) or isinstance(m, nn.Linear):
-            m.reset_parameters()
-    net = net.apply(weight_reset).cuda()
+    optimizer_seg = optim.Adam([{'params': other_params}], lr=0.0001, weight_decay=1e-4)
+    scheduler = lr_scheduler.CosineAnnealingLR(optimizer_seg, T_max=20, eta_min=1e-5)
 
-    for epoch in range(1, 21):
-        # train for one epoch
-        train_log = train(opts, train_loader, net, criterion, optimizer)
-        # evaluate on validation set
-        val_log = validate(opts, val_loader, net, criterion)
+    for epoch in range(1, 31):
+        print('segmentation Epoch [%d/%d]' % (epoch, 30))
+        all_pre = []
+        all_target = []
+        train_log = train(train_loader, net, criterion, optimizer_seg)
+        val_log = validate(val_loader, net, criterion, criterion_classify, all_pre, all_target)
 
         scheduler.step()
 
-        print('loss_seg %.4f - iou %.4f - val_loss_seg %.4f - val_iou %.4f - classify_accu %.4f'
-              % (train_log['loss_seg'], train_log['iou'], val_log['loss_seg'], val_log['iou'], val_log['classification']))
+        print(
+            'loss_seg %.4f - iou %.4f - val_loss_seg %.4f - val_loss_classify %.4f - val_iou %.4f - classify_accu %.4f'
+            % (train_log['loss_seg'], train_log['iou'], val_log['loss_seg'], val_log['loss_classify'], val_log['iou'],
+               val_log['classification']))
 
+        log['iteration'].append(rd)
+        log['stage'].append('segmentation')
         log['epoch'].append(epoch)
         log['lr'].append(opts['lr'])
         log['loss_seg'].append(train_log['loss_seg'])
+        log['loss_classify'].append(' ')
         log['iou'].append(train_log['iou'])
         log['val_loss_seg'].append(val_log['loss_seg'])
+        log['val_loss_classify'].append(val_log['loss_classify'])
         log['val_iou'].append(val_log['iou'])
         log['val_dice'].append(val_log['dice'])
         log['val_class_accu'].append(val_log['classification'])
 
         pd.DataFrame(log).to_csv('models/UNext_Random/log.csv', index=False)
 
-        new_trigger += 1
-
         if val_log['iou'] > new_best_iou:
-            torch.save(net.state_dict(), 'models/UNext_Random/model.pth')
+            # torch.save(net.state_dict(), 'models/UNext_BADGE_Only_For_Seg/model_seg.pth')
             new_best_iou = val_log['iou']
-            print("=> saved best model")
-            new_trigger = 0
+            print("=> saved best segmentation model")
 
-        # early stopping
 
         torch.cuda.empty_cache()
+
+    output = strategy.query(NUM_QUERY)
+    q_idxs = output
+    idxs_lb[q_idxs] = True
+    strategy.update(idxs_lb)
+    # 更新标注集ID
+    q_train_img_ids = []
+    for i in q_idxs:
+        q_train_img_ids.append(train_img_ids[i])
+        select_sample_ids['id'].append(train_img_ids[i])
+        select_sample_ids['iteration'].append(rd)
+    now_train_img_ids = now_train_img_ids + q_train_img_ids
+
+    pd.DataFrame(select_sample_ids).to_csv('models/UNext_Random/select_ids.csv', index=False)
+
+    print('now itera is:', rd, 'now number of train samples:', len(now_train_img_ids))
+
 
