@@ -12,7 +12,7 @@ import os
 import matplotlib.pyplot as plt
 from utils import *
 
-__all__ = ['UNext', 'UNext2', 'UNext3']
+__all__ = ['UNext', 'UNext_core_set', 'UNext3']
 
 import timm
 from timm.models.layers import DropPath, to_2tuple, trunc_normal_
@@ -222,6 +222,8 @@ class BasicBlock(nn.Module):
         return out
 
 
+
+# 分类头在中间
 class UNext(nn.Module):
 
     ## Conv 3 + MLP 2 + shifted MLP
@@ -405,7 +407,9 @@ class UNext(nn.Module):
         return 32   #不确定应该是多少
 
 
-class UNext2(nn.Module):
+
+# embdding是unext的中间
+class UNext_core_set(nn.Module):
 
     ## Conv 3 + MLP 2 + shifted MLP
 
@@ -479,17 +483,30 @@ class UNext2(nn.Module):
     def classificationHead(self):
         return nn.Sequential(
             # 四个残差模块，每个模块两个残差块，每个残差块2层卷积
-            BasicBlock(128, 128, 2), # 宽高/2
-            BasicBlock(128, 128),
+            BasicBlock(256, 256, 2),  # 宽高/2
+            BasicBlock(256, 256),
 
-            BasicBlock(128, 128),
+            BasicBlock(256, 256),
+            BasicBlock(256, 128),  # 通道/2
+
+            BasicBlock(128, 128, 2),  # 宽高/2
             BasicBlock(128, 64),  # 通道/2
-
-            BasicBlock(64, 64, 2),  # 宽高/2
-            BasicBlock(64, 64),
 
             BasicBlock(64, 64),
             BasicBlock(64, 32)  # 通道/2
+
+            # # 四个残差模块，每个模块两个残差块，每个残差块2层卷积
+            # BasicBlock(128, 128, 2), # 宽高/2
+            # BasicBlock(128, 128),
+            #
+            # BasicBlock(128, 128),
+            # BasicBlock(128, 64),  # 通道/2
+            #
+            # BasicBlock(64, 64, 2),  # 宽高/2
+            # BasicBlock(64, 64),
+            #
+            # BasicBlock(64, 64),
+            # BasicBlock(64, 32)  # 通道/2
         )
 
 
@@ -509,13 +526,6 @@ class UNext2(nn.Module):
         out = F.relu(F.max_pool2d(self.ebn3(self.encoder3(out)), 2, 2))
         t3 = out
 
-        classification = self.classHead(out.detach())   # (B, 32, 16, 16)
-        classification = self.classavgpool(classification)
-        # print("avgpool:", classification.shape)  # (B, 32, 1, 1)
-        classification = torch.flatten(classification, 1)  #(B, 32)
-        emb = classification.view(classification.size(0), -1)
-        classification = self.classlinear(emb)# !! (B, 3)
-
         ### Tokenized MLP Stage
         ### Stage 4
 
@@ -533,6 +543,20 @@ class UNext2(nn.Module):
             out = blk(out, H, W)
         out = self.norm4(out)
         out = out.reshape(B, H, W, -1).permute(0, 3, 1, 2).contiguous()  ## shape (B, 256, 16 ,16)
+
+
+        ##############################coreset embd
+        coreset = self.classavgpool(out)
+        coreset_emb = torch.flatten(coreset, 1)
+        ##########################################
+
+        ######################分类头#########################
+        classification = self.classHead(out.detach())   # (B, 32, 16, 16)
+        classification = self.classavgpool(classification)
+        # print("avgpool:", classification.shape)  # (B, 32, 1, 1)
+        classification = torch.flatten(classification, 1)  #(B, 32)
+        emb = classification.view(classification.size(0), -1)
+        classification = self.classlinear(emb)# !! (B, 3)
 
 
         ### Stage 4
@@ -566,13 +590,13 @@ class UNext2(nn.Module):
         out = torch.add(out, t1)
         out = F.relu(F.interpolate(self.decoder5(out), scale_factor=(2, 2), mode='bilinear'))
 
-        return self.final(out), classification, emb
+        return self.final(out), classification, coreset_emb
 
     def get_embedding_dim(self):
-        return 32   #不确定应该是多少
+        return 256   #不确定应该是多少
 
 
-
+# 分类头在中间，分割头增加一层
 class UNext3(nn.Module):
 
     ## Conv 3 + MLP 2 + shifted MLP

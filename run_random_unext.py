@@ -237,10 +237,7 @@ net = net.cuda()
 # optimizer = optim.Adam(params, lr=0.0001, weight_decay=1e-4)
 
 # 对分类头设置更大学习率
-classify_params = list(map(id, net.classHead.parameters()))
-classify_params += list(map(id, net.classlinear.parameters()))
 
-other_params = filter(lambda p: p.requires_grad and id(p) not in classify_params, net.parameters())
 
 # optimizer_seg = optim.Adam([{'params': other_params}], lr=0.0001, weight_decay=1e-4)
 # scheduler = lr_scheduler.CosineAnnealingLR(optimizer_seg, T_max=20, eta_min=1e-5)
@@ -297,6 +294,11 @@ for rd in range(NUM_ROUND+1):
         shuffle=True,
         num_workers=opts['num_workers'],
         drop_last=True)
+
+    classify_params = list(map(id, net.classHead.parameters()))
+    classify_params += list(map(id, net.classlinear.parameters()))
+
+    other_params = filter(lambda p: p.requires_grad and id(p) not in classify_params, net.parameters())
 
     optimizer_seg = optim.Adam([{'params': other_params}], lr=0.0001, weight_decay=1e-4)
     scheduler = lr_scheduler.CosineAnnealingLR(optimizer_seg, T_max=20, eta_min=1e-5)

@@ -28,6 +28,20 @@ class Strategy_Unext:
     def update(self, idxs_lb):
         self.idxs_lb = idxs_lb
 
+    # for core-set
+    def get_embedding(self, X, Y, model):
+        loader_te = DataLoader(self.handler(X, Y, transform=self.val_transform),
+                               shuffle=False, batch_size=8, num_workers=16)
+        model.eval()
+        embedding = torch.zeros([len(Y), model.get_embedding_dim()])
+        with torch.no_grad():
+            for x, y, idxs in loader_te:
+                x, y = Variable(x.cuda()), Variable(y.cuda())
+                _, out, e1 = model(x)
+                embedding[idxs] = e1.data.cpu()
+
+        return embedding
+
     # gradient embedding (assumes cross-entropy loss)
     def get_grad_embedding(self, X, Y, model):
         embDim = model.get_embedding_dim()
@@ -74,7 +88,7 @@ class Strategy_Seg_BADGE:
     def get_grad_embedding(self, X, Y, model):
         embDim = model.get_seg_channsels()
         model.eval()
-        K = 10   # 每张图的激活值分成5组
+        K = 20   # 每张图的激活值分成5组
         embedding = np.zeros([len(Y), embDim * K])
         loader_te = DataLoader(self.handler(X, Y, transform=self.val_transform),
                                shuffle=False, batch_size=8, num_workers=16)
@@ -91,16 +105,17 @@ class Strategy_Seg_BADGE:
                 final_mask[final_mask < 0.5] = 0
 
                 batch_embedding = []
-                for base in range(0, 10, 1):  # base/10 ∈ [0~1], step=0.2
+                # for base in range(0, 10, 1):  # base/10 ∈ [0~1], step=0.2
+                for base in np.arange(0, 10, 0.5):  # base/10 ∈ [0~1], step=0.2
                     bin_embedding = deepcopy(emb)
 
                     # Out-of-range values are set to 0
                     bin_embedding[batchProbs < base / 10] = 0
-                    bin_embedding[batchProbs > (base + 1) / 10] = 0
+                    bin_embedding[batchProbs > (base + 0.5) / 10] = 0
 
                     bin_mask = torch.ones_like(batchProbs)
                     bin_mask[batchProbs < base / 10] = 0
-                    bin_mask[batchProbs > (base + 1) / 10] = 0
+                    bin_mask[batchProbs > (base + 0.5) / 10] = 0
 
                     # Numerator: sum of all the values.
                     # Denominator: total number of non-zero positions.

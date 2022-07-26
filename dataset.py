@@ -287,7 +287,7 @@ class Dataset(Dataset):
         # clas = np.array(row)
         return img, mask, clas, {'img_id': img_id}
 
-
+# 欠采样
 class DatasetClassify(torch.utils.data.Dataset):
     def __init__(self, img_ids, img_dir, img_ext, transform=None):
         self.img_dir = img_dir
@@ -358,6 +358,7 @@ class DatasetClassify(torch.utils.data.Dataset):
         return img, clas, {'img_id': img_id}
 
 
+# 过采样
 class ClassDataHandler(torch.utils.data.Dataset):
     def __init__(self, X, Y, transform=None):
         self.X = X
